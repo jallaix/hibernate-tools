@@ -1,0 +1,22 @@
+<dataset>
+    <MainEntity id="1"
+                label="mainEntity"/>
+
+    <ChildEntity id="1"
+                label="child1"/>
+    <ChildEntity id="2"
+                label="child2"/>
+
+    <ThroughEntity id="1"
+                label="through1"
+                mainEntityId="1"
+                childEntityId="1"/>
+    <ThroughEntity id="2"
+                   label="through2"
+                   mainEntityId="1"
+                   childEntityId="2"/>
+    <ThroughEntity id="3"
+                   label="through3"
+                   mainEntityId="1"
+                   childEntityId="1"/>
+</dataset>
