@@ -19,13 +19,25 @@ import org.junit.Test;
 import java.util.Set;
 
 /**
- * Created by Julien on 08/09/2016.
+ * Test Hibernate utility methods.
  */
-public class DeepDeproxyTest {
+public class HibernateToolsTest {
 
+    /**
+     * DbUnit database configuration
+     */
     private IDatabaseTester databaseTester;
+
+    /**
+     * Hibernate session factory
+     */
     private SessionFactory sessionFactory;
 
+    /**
+     * Initialize Hibernate framework (create database structure) and load fixture data using DbUnit.
+     *
+     * @throws Exception If Hibernate framework or DbUnit data loading fails
+     */
     @Before
     public void init() throws Exception {
 
@@ -41,20 +53,28 @@ public class DeepDeproxyTest {
         databaseTester.onSetup();
     }
 
+    /**
+     * Remove fixture data set by DbUnit.
+     *
+     * @throws Exception If DbUnit data deleting fails
+     */
     @After
     public void exit() throws Exception {
         databaseTester.onTearDown();
     }
 
+    /**
+     * Verify no Hibernate proxy exist in the entity graph after the unproxy function executes.
+     */
     @Test
-    public void testDeproxyRemovesProxies() {
+    public void unproxyDetachedRecursivelyRemovesProxies() {
 
         Session session = sessionFactory.openSession();
         Transaction tx = session.beginTransaction();
 
         // Load main, through et child entities
         MainEntity mainEntity = session.load(MainEntity.class, 1);
-        MainEntity resultEntity = HibernateTools.deepDeproxy(mainEntity);
+        MainEntity resultEntity = HibernateTools.unproxyDetachedRecursively(mainEntity);
         Hibernate.initialize(mainEntity.getThroughEntities());
         Set<ThroughEntity> throughEntities = mainEntity.getThroughEntities();
         throughEntities.forEach(t -> Hibernate.initialize(t.getChildEntity()));
@@ -62,6 +82,6 @@ public class DeepDeproxyTest {
         tx.commit();
         session.close();
 
-        MainEntity resultEntity2 = HibernateTools.deepDeproxy(mainEntity);
+        MainEntity resultEntity2 = HibernateTools.unproxyDetachedRecursively(mainEntity);
     }
 }

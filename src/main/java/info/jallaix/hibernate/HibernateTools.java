@@ -1,101 +1,166 @@
 package info.jallaix.hibernate;
 
-import org.apache.commons.beanutils.PropertyUtils;
-import org.hibernate.Hibernate;
+import org.hibernate.collection.internal.AbstractPersistentCollection;
 import org.hibernate.proxy.HibernateProxy;
 import org.hibernate.proxy.LazyInitializer;
 
-import java.beans.PropertyDescriptor;
 import java.lang.reflect.Array;
-import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.util.*;
 
 /**
- * Created by Julien on 09/09/2016.
+ * Utility class for Hibernate containing the method :
+ * <ul>
+ * <li>{@link HibernateTools#unproxyDetachedRecursively(Object)} : Remove all proxies et persistent collections from an object graph</li>
+ * </ul>
  */
 public class HibernateTools {
 
-    public static <T> T deepDeproxy(final T maybeProxy) throws ClassCastException {
-        if (maybeProxy == null) return null;
-        T ret = deepDeproxy(maybeProxy, new HashSet<Object>());
-        return ret;
+    /**
+     * Recursively replace Hibernate proxies by POJOs.
+     *
+     * @param maybeProxy Object that may contain Hibernate proxies
+     * @return Object without Hibernate proxies
+     */
+    @SuppressWarnings("unused")
+    public static <T> T unproxyDetachedRecursively(T maybeProxy) {
+
+        if (maybeProxy == null) {
+            return null;
+        }
+
+        return unproxyDetachedRecursively(maybeProxy, new HashSet<>());
     }
 
-    private static <T> T deepDeproxy(final T maybeProxy, final HashSet<Object> visited) throws ClassCastException {
-        if (maybeProxy == null) return null;
-        Class clazz;
-        Hibernate.initialize(maybeProxy);
+    /**
+     * Recursively replace Hibernate proxies by POJOs.
+     *
+     * @param maybeProxy Object that may contain Hibernate proxies
+     * @param visited    List of objects without proxy
+     * @return Object without Hibernate proxies
+     */
+    @SuppressWarnings("unchecked")
+    private static <T> T unproxyDetachedRecursively(T maybeProxy, HashSet<Object> visited) {
+
+        if (maybeProxy == null) {
+            return null;
+        }
+
+        // Get the class to un-proxy
+        Class<T> clazz;
         if (maybeProxy instanceof HibernateProxy) {
+
             HibernateProxy proxy = (HibernateProxy) maybeProxy;
             LazyInitializer li = proxy.getHibernateLazyInitializer();
-            clazz = li.getImplementation().getClass();
+            if (li.isUninitialized())
+                return null;
+            else
+                clazz = (Class<T>) li.getImplementation().getClass();
         } else {
-            clazz = maybeProxy.getClass();
+            clazz = (Class<T>) maybeProxy.getClass();
         }
-        T ret = (T) deepDeproxy(maybeProxy, clazz);
-        if (visited.contains(ret)) return ret;
-        visited.add(ret);
-        for (PropertyDescriptor property : PropertyUtils.getPropertyDescriptors(ret)) {
+
+        // Un-proxy the bean
+        T ret = unproxyDetachedSingleBean(maybeProxy, clazz);
+
+        // Return if the bean is already un-proxied
+        if (visited.contains(ret)) {
+            return ret;
+        } else {
+            visited.add(ret);
+        }
+
+        // Un-proxy contained fields
+        for (Field field : clazz.getDeclaredFields()) {
+
+            // Final fields aren't touched
+            if ((field.getModifiers() & Modifier.FINAL) == Modifier.FINAL) {
+                continue;
+            }
+
+            // Get the field value
+            Object value;
             try {
-                String name = property.getName();
-                if (!"owner".equals(name) && property.getWriteMethod() != null) {
-                    Object value = PropertyUtils.getProperty(ret, name);
-                    boolean needToSetProperty = false;
-                    if (value instanceof HibernateProxy) {
-                        value = deepDeproxy(value, visited);
-                        needToSetProperty = true;
-                    }
-                    if (value instanceof Object[]) {
-                        Object[] valueArray = (Object[]) value;
-                        Object[] result = (Object[]) Array.newInstance(value.getClass(), valueArray.length);
-                        for (int i = 0; i < valueArray.length; i++) {
-                            result[i] = deepDeproxy(valueArray[i], visited);
-                        }
-                        value = result;
-                        needToSetProperty = true;
-                    }
-                    if (value instanceof Set) {
-                        Set valueSet = (Set) value;
-                        Set result = new HashSet();
-                        for (Object o : valueSet) {
-                            result.add(deepDeproxy(o, visited));
-                        }
-                        value = result;
-                        needToSetProperty = true;
-                    }
-                    if (value instanceof Map) {
-                        Map valueMap = (Map) value;
-                        Map result = new HashMap();
-                        for (Object o : valueMap.keySet()) {
-                            result.put(deepDeproxy(o, visited), deepDeproxy(valueMap.get(o), visited));
-                        }
-                        value = result;
-                        needToSetProperty = true;
-                    }
-                    if (value instanceof List) {
-                        List valueList = (List) value;
-                        List result = new ArrayList(valueList.size());
-                        for (Object o : valueList) {
-                            result.add(deepDeproxy(o, visited));
-                        }
-                        value = result;
-                        needToSetProperty = true;
-                    }
-                    if (needToSetProperty) PropertyUtils.setProperty(ret, name, value);
+                field.setAccessible(true);
+                value = field.get(ret);
+            } catch (IllegalArgumentException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+
+            // Un-proxy an proxied collection field
+            if (value instanceof AbstractPersistentCollection && !((AbstractPersistentCollection) value).wasInitialized()) {
+                value = null;
+            }
+            // Un-proxy an array
+            else if (value instanceof Object[]) {
+
+                Object[] valueArray = (Object[]) value;
+                Object[] result = (Object[]) Array.newInstance(value.getClass(), valueArray.length);
+                for (int i = 0; i < valueArray.length; i++) {
+                    result[i] = unproxyDetachedRecursively(valueArray[i], visited);
                 }
-            } catch (java.lang.IllegalAccessException e) {
-                e.printStackTrace();
-            } catch (InvocationTargetException e) {
-                e.printStackTrace();
-            } catch (NoSuchMethodException e) {
-                e.printStackTrace();
+                value = result;
+            }
+            // Un-proxy a set
+            else if (value instanceof Set) {
+
+                Set<?> valueSet = (Set<?>) value;
+                Set<Object> result = new HashSet<>();
+                for (Object o : valueSet) {
+                    result.add(unproxyDetachedRecursively(o, visited));
+                }
+                value = result;
+            }
+            // Un-proxy a map
+            else if (value instanceof Map) {
+
+                Map<?, ?> valueMap = (Map<?, ?>) value;
+                Map<Object, Object> result = new HashMap<>();
+                for (Object o : valueMap.keySet()) {
+                    result.put(unproxyDetachedRecursively(o, visited), unproxyDetachedRecursively(valueMap.get(o), visited));
+                }
+                value = result;
+            }
+            // Un-proxy a list
+            else if (value instanceof List) {
+
+                List<?> valueList = (List<?>) value;
+                List<Object> result = new ArrayList<>(valueList.size());
+                for (Object o : valueList) {
+                    result.add(unproxyDetachedRecursively(o, visited));
+                }
+                value = result;
+            }
+            // Un-proxy a standard field
+            else {
+                value = unproxyDetachedRecursively(value, visited);
+            }
+
+            // Replace the field value by the un-proxied value
+            try {
+                field.set(ret, value);
+            } catch (IllegalArgumentException | IllegalAccessException e) {
+                throw new RuntimeException(e);
             }
         }
+
         return ret;
     }
 
-    private static <T> T deepDeproxy(T maybeProxy, Class<T> baseClass) throws ClassCastException {
-        if (maybeProxy == null) return null;
+    /**
+     * Replace an Hibernate proxy by a POJO
+     *
+     * @param maybeProxy Object that may contain an Hibernate proxy
+     * @param baseClass  Proxy base class
+     * @return Object without Hibernate proxy
+     */
+    private static <T> T unproxyDetachedSingleBean(T maybeProxy, Class<T> baseClass) {
+
+        if (maybeProxy == null) {
+            return null;
+        }
+
         if (maybeProxy instanceof HibernateProxy) {
             return baseClass.cast(((HibernateProxy) maybeProxy).getHibernateLazyInitializer().getImplementation());
         } else {
