@@ -1,12 +1,14 @@
 package info.jallaix.hibernate;
 
+import javassist.util.proxy.MethodHandler;
+import javassist.util.proxy.ProxyFactory;
+import org.hibernate.LazyInitializationException;
 import org.hibernate.collection.internal.AbstractPersistentCollection;
 import org.hibernate.proxy.HibernateProxy;
 import org.hibernate.proxy.LazyInitializer;
+import org.hibernate.proxy.pojo.javassist.JavassistProxyFactory;
 
-import java.lang.reflect.Array;
-import java.lang.reflect.Field;
-import java.lang.reflect.Modifier;
+import java.lang.reflect.*;
 import java.util.*;
 
 /**
@@ -166,5 +168,28 @@ public class HibernateTools {
         } else {
             return baseClass.cast(maybeProxy);
         }
+    }
+
+    public static <T> T createLazyProxy(Class<T> clazz) {
+
+        final T proxy;
+
+        final MethodHandler mi = new MethodHandler() {
+            public Object invoke(Object self, Method m, Method proceed,
+                                 Object[] args) throws Throwable {
+
+                throw new LazyInitializationException("This object is not initialized.");
+            }
+        };
+
+        ProxyFactory proxyFactory = JavassistProxyFactory.buildJavassistProxyFactory(clazz, new Class[0]);
+        proxyFactory.setSuperclass(clazz);
+        try {
+            proxy = (T) proxyFactory.create(new Class[0], new Object[0], mi);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+        return proxy;
     }
 }

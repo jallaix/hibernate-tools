@@ -84,4 +84,11 @@ public class HibernateToolsTest {
 
         MainEntity resultEntity2 = HibernateTools.unproxyDetachedRecursively(mainEntity);
     }
+
+    @Test
+    public void createProxy() {
+
+        ChildEntity childEntity = HibernateTools.createLazyProxy(ChildEntity.class);
+        childEntity.getLabel();
+    }
 }
