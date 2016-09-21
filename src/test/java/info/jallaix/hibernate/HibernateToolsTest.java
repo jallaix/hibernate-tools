@@ -73,13 +73,7 @@ public class HibernateToolsTest {
     public void unproxyUninitializedProxy() {
 
         // Fixture
-        MainEntity fixtureEntity = new MainEntity();
-        fixtureEntity.setId(1);
-        List<Queue<Field>> uninitializedProxyPaths = new ArrayList<>();
-        Queue<Field> fieldsPath = new PriorityQueue();
-        fieldsPath.offer(null);
-        uninitializedProxyPaths.add(fieldsPath);
-        Pair<MainEntity, List<Queue<Field>>> fixture = new ImmutablePair<>(fixtureEntity, uninitializedProxyPaths);
+        Pair<MainEntity, List<Queue<Field>>> fixture = buildMinimalFixture();
 
         // Load an uninitialized proxy
         Session session = sessionFactory.openSession();
@@ -92,7 +86,7 @@ public class HibernateToolsTest {
 
         // entity with only the identifier set expected after un-proxying
         Pair<MainEntity, List<Queue<Field>>> result = HibernateTools.unproxyDetachedRecursively(mainEntity);
-        assertThat(result.getLeft(), is(fixture));
+        assertThat(result, is(fixture));
     }
 
     /**
@@ -102,7 +96,7 @@ public class HibernateToolsTest {
     public void unproxyFullyInitializedProxies() {
 
         // Fixture
-        MainEntity fixture = buildFullFixture();
+        Pair<MainEntity, List<Queue<Field>>> fixture = buildFullFixture();
 
         // Load main, through et child entities
         Session session = sessionFactory.openSession();
@@ -118,7 +112,7 @@ public class HibernateToolsTest {
 
         // Full graph of POJO expected after un-proxying
         Pair<MainEntity, List<Queue<Field>>> result = HibernateTools.unproxyDetachedRecursively(mainEntity);
-        assertThat(result.getLeft(), is(fixture));
+        assertThat(result, is(fixture));
     }
 
     /**
@@ -128,7 +122,7 @@ public class HibernateToolsTest {
     public void unproxyPartiallyInitializedProxies() {
 
         // Fixture
-        MainEntity fixture = buildPartialFixture();
+        Pair<MainEntity, List<Queue<Field>>> fixture = buildPartialFixture();
 
         // Load an initialized proxy
         Session session = sessionFactory.openSession();
@@ -141,7 +135,7 @@ public class HibernateToolsTest {
 
         // Full graph of POJO expected after un-proxying
         Pair<MainEntity, List<Queue<Field>>> result = HibernateTools.unproxyDetachedRecursively(mainEntity);
-        assertThat(result.getLeft(), is(fixture));
+        assertThat(result, is(fixture));
     }
 
     @Test(expected = LazyInitializationException.class)
@@ -157,9 +151,9 @@ public class HibernateToolsTest {
      *
      * @return An fully initialized entity
      */
-    private MainEntity buildFullFixture() {
+    private Pair<MainEntity, List<Queue<Field>>>  buildFullFixture() {
 
-        MainEntity mainEntity = buildPartialFixture();
+        MainEntity mainEntity = buildPartialFixture().getLeft();
         mainEntity.setThroughEntities(new HashSet<>());
 
         ChildEntity childEntity1 = new ChildEntity();
@@ -191,7 +185,7 @@ public class HibernateToolsTest {
         throughEntity3.setChildEntity(childEntity1);
         mainEntity.getThroughEntities().add(throughEntity3);
 
-        return mainEntity;
+        return new ImmutablePair<>(mainEntity, new ArrayList<>());
     }
 
     /**
@@ -199,12 +193,39 @@ public class HibernateToolsTest {
      *
      * @return An partially initialized entity
      */
-    private MainEntity buildPartialFixture() {
+    private Pair<MainEntity, List<Queue<Field>>> buildPartialFixture() {
 
         MainEntity mainEntity = new MainEntity();
         mainEntity.setId(1);
         mainEntity.setLabel("mainEntity");
 
-        return mainEntity;
+        List<Queue<Field>> uninitializedProxyPaths = new ArrayList<>();
+
+        Queue<Field> fieldsPath = new LinkedList<>();
+        fieldsPath.offer(null);
+        try {
+            fieldsPath.offer(MainEntity.class.getDeclaredField("throughEntities"));
+        } catch (NoSuchFieldException e) {
+            throw new RuntimeException(e);
+        }
+
+        uninitializedProxyPaths.add(fieldsPath);
+
+        return new ImmutablePair<>(mainEntity, uninitializedProxyPaths);
+    }
+
+    private Pair<MainEntity, List<Queue<Field>>> buildMinimalFixture() {
+
+        MainEntity mainEntity = new MainEntity();
+        mainEntity.setId(1);
+
+        List<Queue<Field>> uninitializedProxyPaths = new ArrayList<>();
+
+        Queue<Field> fieldsPath = new LinkedList<>();
+        fieldsPath.offer(null);
+
+        uninitializedProxyPaths.add(fieldsPath);
+
+        return new ImmutablePair<>(mainEntity, uninitializedProxyPaths);
     }
 }

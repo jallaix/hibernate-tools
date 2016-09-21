@@ -38,7 +38,10 @@ public class HibernateTools {
             return null;
         }
 
-        return unproxyDetachedRecursively(maybeProxy, new ArrayList<>(), new HashSet<>(), new PriorityQueue<>());
+        LinkedList<Field> fieldPath = new LinkedList<>();
+        fieldPath.add(null);                             // Null indicates root object
+
+        return unproxyDetachedRecursively(maybeProxy, new ArrayList<>(), new HashSet<>(), fieldPath);
     }
 
     /**
@@ -49,13 +52,139 @@ public class HibernateTools {
      * @return Object without Hibernate proxies
      */
     @SuppressWarnings("unchecked")
-    private static <T> Pair<T, List<Queue<Field>>> unproxyDetachedRecursively(T maybeProxy, List<Queue<Field>> uninitializedProxyPaths, HashSet<Object> visited, Queue<Field> fieldPath) {
+    private static <T> Pair<T, List<Queue<Field>>> unproxyDetachedRecursively(T maybeProxy, List<Queue<Field>> uninitializedProxyPaths, HashSet<Object> visited, LinkedList<Field> fieldPath) {
 
         if (maybeProxy == null) {
             return null;
         }
 
         // Get the class to un-proxy
+        Class<T> clazz = getUnproxyClass(maybeProxy);
+
+        // Un-proxy the bean
+        Pair<T, Boolean> unproxyResult = unproxyDetachedSingleBean(maybeProxy, clazz);
+        T unproxiedEntity = unproxyResult.getLeft();
+
+        // Add the field path to the list of uninitialized proxy paths if the un-proxied bean is uninitialized
+        if (!unproxyResult.getRight()) {
+            uninitializedProxyPaths.add(new LinkedList<Field>(fieldPath));
+            return new ImmutablePair<>(unproxiedEntity, uninitializedProxyPaths);
+        }
+
+        // Return if the bean is already un-proxied
+        if (visited.contains(unproxiedEntity)) {
+            return new ImmutablePair<>(unproxiedEntity, uninitializedProxyPaths);
+        } else {
+            visited.add(unproxiedEntity);
+        }
+
+        // Un-proxy contained fields
+        for (Field field : clazz.getDeclaredFields()) {
+
+            // Final fields aren't touched
+            if ((field.getModifiers() & Modifier.FINAL) == Modifier.FINAL) {
+                continue;
+            }
+
+            // Add the current field to the field path
+            fieldPath.addLast(field);
+
+            // Get the field value
+            Object fieldValue;
+            try {
+                field.setAccessible(true);
+                fieldValue = field.get(unproxiedEntity);
+            } catch (IllegalArgumentException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+
+            // Un-proxy an proxied collection field
+            if (fieldValue instanceof AbstractPersistentCollection && !((AbstractPersistentCollection) fieldValue).wasInitialized()) {
+                fieldValue = null;
+                uninitializedProxyPaths.add(new LinkedList<Field>(fieldPath));
+            }
+            // Un-proxy an array
+            else if (fieldValue instanceof Object[]) {
+
+                Object[] valueArray = (Object[]) fieldValue;
+                Object[] result = (Object[]) Array.newInstance(fieldValue.getClass(), valueArray.length);
+                for (int i = 0; i < valueArray.length; i++) {
+
+                    Pair<Object, List<Queue<Field>>> itemUnproxyResult = unproxyDetachedRecursively(valueArray[i], uninitializedProxyPaths, visited, fieldPath);
+                    uninitializedProxyPaths = itemUnproxyResult.getRight();
+
+                    result[i] = itemUnproxyResult.getLeft();
+                }
+                fieldValue = result;
+            }
+            // Un-proxy a set
+            else if (fieldValue instanceof Set) {
+
+                Set<?> valueSet = (Set<?>) fieldValue;
+                Set<Object> result = new HashSet<>();
+                for (Object o : valueSet) {
+
+                    Pair<Object, List<Queue<Field>>> itemUnproxyResult = unproxyDetachedRecursively(o, uninitializedProxyPaths, visited, fieldPath);
+                    uninitializedProxyPaths = itemUnproxyResult.getRight();
+
+                    result.add(itemUnproxyResult.getLeft());
+                }
+                fieldValue = result;
+            }
+            // Un-proxy a map
+            else if (fieldValue instanceof Map) {
+
+                Map<?, ?> valueMap = (Map<?, ?>) fieldValue;
+                Map<Object, Object> result = new HashMap<>();
+                for (Object o : valueMap.keySet()) {
+
+                    Pair<Object, List<Queue<Field>>> keyUnproxyResult = unproxyDetachedRecursively(o, uninitializedProxyPaths, visited, fieldPath);
+                    uninitializedProxyPaths = keyUnproxyResult.getRight();
+                    Pair<Object, List<Queue<Field>>> valueUnproxyResult = unproxyDetachedRecursively(valueMap.get(o), uninitializedProxyPaths, visited, fieldPath);
+                    uninitializedProxyPaths = valueUnproxyResult.getRight();
+
+                    result.put(keyUnproxyResult.getLeft(), valueUnproxyResult.getLeft());
+                }
+                fieldValue = result;
+            }
+            // Un-proxy a list
+            else if (fieldValue instanceof List) {
+
+                List<?> valueList = (List<?>) fieldValue;
+                List<Object> result = new ArrayList<>(valueList.size());
+                for (Object o : valueList) {
+
+                    Pair<Object, List<Queue<Field>>> itemUnproxyResult = unproxyDetachedRecursively(o, uninitializedProxyPaths, visited, fieldPath);
+                    uninitializedProxyPaths = itemUnproxyResult.getRight();
+
+                    result.add(itemUnproxyResult.getLeft());
+                }
+                fieldValue = result;
+            }
+            // Un-proxy another field type
+            else {
+                Pair<Object, List<Queue<Field>>> fieldUnproxyResult = unproxyDetachedRecursively(fieldValue, uninitializedProxyPaths, visited, fieldPath);
+                uninitializedProxyPaths = fieldUnproxyResult.getRight();
+
+                fieldValue = fieldUnproxyResult.getLeft();
+            }
+
+            // Replace the field value by the un-proxied value
+            try {
+                field.set(unproxiedEntity, fieldValue);
+            } catch (IllegalArgumentException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+
+            // Remove the current field from the field path
+            fieldPath.removeLast();
+        }
+
+        return new ImmutablePair<>(unproxiedEntity, uninitializedProxyPaths);
+    }
+
+    private static <T> Class<T> getUnproxyClass(final T maybeProxy) {
+
         Class<T> clazz;
         if (maybeProxy instanceof HibernateProxy) {
 
@@ -68,106 +197,7 @@ public class HibernateTools {
             clazz = (Class<T>) maybeProxy.getClass();
         }
 
-        // Un-proxy the bean
-        Pair<T, Boolean> unproxyResult = unproxyDetachedSingleBean(maybeProxy, clazz);
-        T ret = unproxyResult.getLeft();
-
-        // Add the field path to the list of uninitialized proxy paths if the un-proxied bean is uninitialized
-        if (!unproxyResult.getRight()) {
-            uninitializedProxyPaths.add(fieldPath);
-            return new ImmutablePair<>(ret, uninitializedProxyPaths);
-        }
-
-        // Return if the bean is already un-proxied
-        if (visited.contains(ret)) {
-            return new ImmutablePair<>(ret, uninitializedProxyPaths);
-        } else {
-            visited.add(ret);
-        }
-
-        // Un-proxy contained fields
-        for (Field field : clazz.getDeclaredFields()) {
-
-            // Final fields aren't touched
-            if ((field.getModifiers() & Modifier.FINAL) == Modifier.FINAL) {
-                continue;
-            }
-
-            // Add the current field to the field path
-            fieldPath.offer(field);
-
-            // Get the field value
-            Object value;
-            try {
-                field.setAccessible(true);
-                value = field.get(ret);
-            } catch (IllegalArgumentException | IllegalAccessException e) {
-                throw new RuntimeException(e);
-            }
-
-            // Un-proxy an proxied collection field
-            if (value instanceof AbstractPersistentCollection && !((AbstractPersistentCollection) value).wasInitialized()) {
-                value = null;
-            }
-            // Un-proxy an array
-            else if (value instanceof Object[]) {
-
-                Object[] valueArray = (Object[]) value;
-                Object[] result = (Object[]) Array.newInstance(value.getClass(), valueArray.length);
-                for (int i = 0; i < valueArray.length; i++) {
-                    result[i] = unproxyDetachedRecursively(valueArray[i], uninitializedProxyPaths, visited, fieldPath);
-                }
-                value = result;
-            }
-            // Un-proxy a set
-            else if (value instanceof Set) {
-
-                Set<?> valueSet = (Set<?>) value;
-                Set<Object> result = new HashSet<>();
-                for (Object o : valueSet) {
-                    result.add(unproxyDetachedRecursively(o, uninitializedProxyPaths, visited, fieldPath));
-                }
-                value = result;
-            }
-            // Un-proxy a map
-            else if (value instanceof Map) {
-
-                Map<?, ?> valueMap = (Map<?, ?>) value;
-                Map<Object, Object> result = new HashMap<>();
-                for (Object o : valueMap.keySet()) {
-                    result.put(
-                            unproxyDetachedRecursively(o, uninitializedProxyPaths, visited, fieldPath),
-                            unproxyDetachedRecursively(valueMap.get(o), uninitializedProxyPaths, visited, fieldPath));
-                }
-                value = result;
-            }
-            // Un-proxy a list
-            else if (value instanceof List) {
-
-                List<?> valueList = (List<?>) value;
-                List<Object> result = new ArrayList<>(valueList.size());
-                for (Object o : valueList) {
-                    result.add(unproxyDetachedRecursively(o, uninitializedProxyPaths, visited, fieldPath));
-                }
-                value = result;
-            }
-            // Un-proxy a standard field
-            else {
-                value = unproxyDetachedRecursively(value, uninitializedProxyPaths, visited, fieldPath);
-            }
-
-            // Replace the field value by the un-proxied value
-            try {
-                field.set(ret, value);
-            } catch (IllegalArgumentException | IllegalAccessException e) {
-                throw new RuntimeException(e);
-            }
-
-            // Remove the current field from the field path
-            fieldPath.poll();
-        }
-
-        return new ImmutablePair<>(ret, uninitializedProxyPaths);
+        return clazz;
     }
 
     /**
