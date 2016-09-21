@@ -2,13 +2,19 @@ package info.jallaix.hibernate;
 
 import javassist.util.proxy.MethodHandler;
 import javassist.util.proxy.ProxyFactory;
+import org.apache.commons.lang3.tuple.ImmutablePair;
+import org.apache.commons.lang3.tuple.Pair;
+import org.hibernate.Hibernate;
 import org.hibernate.LazyInitializationException;
 import org.hibernate.collection.internal.AbstractPersistentCollection;
 import org.hibernate.proxy.HibernateProxy;
-import org.hibernate.proxy.LazyInitializer;
 import org.hibernate.proxy.pojo.javassist.JavassistProxyFactory;
 
-import java.lang.reflect.*;
+import javax.persistence.Id;
+import java.lang.reflect.Array;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.util.*;
 
 /**
@@ -26,13 +32,13 @@ public class HibernateTools {
      * @return Object without Hibernate proxies
      */
     @SuppressWarnings("unused")
-    public static <T> T unproxyDetachedRecursively(T maybeProxy) {
+    public static <T> Pair<T, List<Queue<Field>>> unproxyDetachedRecursively(T maybeProxy) {
 
         if (maybeProxy == null) {
             return null;
         }
 
-        return unproxyDetachedRecursively(maybeProxy, new HashSet<>());
+        return unproxyDetachedRecursively(maybeProxy, new ArrayList<>(), new HashSet<>(), new PriorityQueue<>());
     }
 
     /**
@@ -43,7 +49,7 @@ public class HibernateTools {
      * @return Object without Hibernate proxies
      */
     @SuppressWarnings("unchecked")
-    private static <T> T unproxyDetachedRecursively(T maybeProxy, HashSet<Object> visited) {
+    private static <T> Pair<T, List<Queue<Field>>> unproxyDetachedRecursively(T maybeProxy, List<Queue<Field>> uninitializedProxyPaths, HashSet<Object> visited, Queue<Field> fieldPath) {
 
         if (maybeProxy == null) {
             return null;
@@ -54,21 +60,27 @@ public class HibernateTools {
         if (maybeProxy instanceof HibernateProxy) {
 
             HibernateProxy proxy = (HibernateProxy) maybeProxy;
-            LazyInitializer li = proxy.getHibernateLazyInitializer();
-            if (li.isUninitialized())
-                return null;
+            if (Hibernate.isInitialized(proxy))
+                clazz = (Class<T>) proxy.getHibernateLazyInitializer().getImplementation().getClass();
             else
-                clazz = (Class<T>) li.getImplementation().getClass();
+                clazz = (Class<T>) proxy.getHibernateLazyInitializer().getPersistentClass();
         } else {
             clazz = (Class<T>) maybeProxy.getClass();
         }
 
         // Un-proxy the bean
-        T ret = unproxyDetachedSingleBean(maybeProxy, clazz);
+        Pair<T, Boolean> unproxyResult = unproxyDetachedSingleBean(maybeProxy, clazz);
+        T ret = unproxyResult.getLeft();
+
+        // Add the field path to the list of uninitialized proxy paths if the un-proxied bean is uninitialized
+        if (!unproxyResult.getRight()) {
+            uninitializedProxyPaths.add(fieldPath);
+            return new ImmutablePair<>(ret, uninitializedProxyPaths);
+        }
 
         // Return if the bean is already un-proxied
         if (visited.contains(ret)) {
-            return ret;
+            return new ImmutablePair<>(ret, uninitializedProxyPaths);
         } else {
             visited.add(ret);
         }
@@ -80,6 +92,9 @@ public class HibernateTools {
             if ((field.getModifiers() & Modifier.FINAL) == Modifier.FINAL) {
                 continue;
             }
+
+            // Add the current field to the field path
+            fieldPath.offer(field);
 
             // Get the field value
             Object value;
@@ -100,7 +115,7 @@ public class HibernateTools {
                 Object[] valueArray = (Object[]) value;
                 Object[] result = (Object[]) Array.newInstance(value.getClass(), valueArray.length);
                 for (int i = 0; i < valueArray.length; i++) {
-                    result[i] = unproxyDetachedRecursively(valueArray[i], visited);
+                    result[i] = unproxyDetachedRecursively(valueArray[i], uninitializedProxyPaths, visited, fieldPath);
                 }
                 value = result;
             }
@@ -110,7 +125,7 @@ public class HibernateTools {
                 Set<?> valueSet = (Set<?>) value;
                 Set<Object> result = new HashSet<>();
                 for (Object o : valueSet) {
-                    result.add(unproxyDetachedRecursively(o, visited));
+                    result.add(unproxyDetachedRecursively(o, uninitializedProxyPaths, visited, fieldPath));
                 }
                 value = result;
             }
@@ -120,7 +135,9 @@ public class HibernateTools {
                 Map<?, ?> valueMap = (Map<?, ?>) value;
                 Map<Object, Object> result = new HashMap<>();
                 for (Object o : valueMap.keySet()) {
-                    result.put(unproxyDetachedRecursively(o, visited), unproxyDetachedRecursively(valueMap.get(o), visited));
+                    result.put(
+                            unproxyDetachedRecursively(o, uninitializedProxyPaths, visited, fieldPath),
+                            unproxyDetachedRecursively(valueMap.get(o), uninitializedProxyPaths, visited, fieldPath));
                 }
                 value = result;
             }
@@ -130,13 +147,13 @@ public class HibernateTools {
                 List<?> valueList = (List<?>) value;
                 List<Object> result = new ArrayList<>(valueList.size());
                 for (Object o : valueList) {
-                    result.add(unproxyDetachedRecursively(o, visited));
+                    result.add(unproxyDetachedRecursively(o, uninitializedProxyPaths, visited, fieldPath));
                 }
                 value = result;
             }
             // Un-proxy a standard field
             else {
-                value = unproxyDetachedRecursively(value, visited);
+                value = unproxyDetachedRecursively(value, uninitializedProxyPaths, visited, fieldPath);
             }
 
             // Replace the field value by the un-proxied value
@@ -145,29 +162,57 @@ public class HibernateTools {
             } catch (IllegalArgumentException | IllegalAccessException e) {
                 throw new RuntimeException(e);
             }
+
+            // Remove the current field from the field path
+            fieldPath.poll();
         }
 
-        return ret;
+        return new ImmutablePair<>(ret, uninitializedProxyPaths);
     }
 
     /**
-     * Replace an Hibernate proxy by a POJO
+     * Replace an Hibernate proxy by a POJO and indicate if the proxy was initialized.
+     * If the entity isn't a proxy, the data is considered initialized.
      *
      * @param maybeProxy Object that may contain an Hibernate proxy
      * @param baseClass  Proxy base class
      * @return Object without Hibernate proxy
      */
-    private static <T> T unproxyDetachedSingleBean(T maybeProxy, Class<T> baseClass) {
+    private static <T> Pair<T, Boolean> unproxyDetachedSingleBean(final T maybeProxy, final Class<T> baseClass) {
 
         if (maybeProxy == null) {
             return null;
         }
 
         if (maybeProxy instanceof HibernateProxy) {
-            return baseClass.cast(((HibernateProxy) maybeProxy).getHibernateLazyInitializer().getImplementation());
-        } else {
-            return baseClass.cast(maybeProxy);
+
+            if (Hibernate.isInitialized(maybeProxy))    // Linked POJO is returned if there is an initialized proxy
+
+                return new ImmutablePair<>(
+                        baseClass.cast(((HibernateProxy) maybeProxy).getHibernateLazyInitializer().getImplementation()),
+                        true);
+
+            else {  // POJO built with identifier is returned if there is an uninitialized proxy
+
+                // Find the identifier field in the entity class
+                Field identifierField = getIdentifierField(baseClass);
+                identifierField.setAccessible(true);
+
+                // Create an entity bean initialized with the proxy's identifier
+                final T uninitializedEntity;
+                try {
+                    uninitializedEntity = baseClass.newInstance();
+                    identifierField.set(uninitializedEntity, ((HibernateProxy) maybeProxy).getHibernateLazyInitializer().getIdentifier());
+                } catch (InstantiationException | IllegalAccessException e) {
+                    throw new RuntimeException(e);
+                }
+
+                return new ImmutablePair<>(uninitializedEntity, false);
+            }
         }
+        // Original POJO is returned if there is no proxy
+        else
+            return new ImmutablePair<>(baseClass.cast(maybeProxy), true);
     }
 
     public static <T> T createLazyProxy(Class<T> clazz) {
@@ -191,5 +236,25 @@ public class HibernateTools {
         }
 
         return proxy;
+    }
+
+    /**
+     * Find the field used as identifier for the entity.
+     *
+     * @param <T>           The entity type
+     * @param documentClass The entity class
+     * @return The identifier field
+     */
+    private static <T> Field getIdentifierField(Class<T> documentClass) {
+
+        // Find field in entity class with @Id annotation
+        for (Field field : documentClass.getDeclaredFields()) {
+            if (field.getDeclaredAnnotation(Id.class) != null) {
+                field.setAccessible(true);
+                return field;
+            }
+        }
+
+        return null;
     }
 }
