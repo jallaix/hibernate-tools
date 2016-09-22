@@ -173,7 +173,7 @@ public class HibernateToolsTest {
      * Verify a previously un-proxied entity is properly feed with proxy mocks.
      */
     @Test
-    public void feedUninitializedEntityWithProxyMock() {
+    public void feedUninitializedEntityWithProxyMocks() {
 
         // Mock entity with proxy
         Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntity = buildUninitializedMainEntity();
@@ -184,13 +184,12 @@ public class HibernateToolsTest {
         try {
             entityMocked.getLabel();
             fail("A LazyInitializationException should be thrown");
-        }
-        catch (LazyInitializationException ignored) {
+        } catch (LazyInitializationException ignored) {
         }
     }
 
     @Test
-    public void feedEntityWithUninitializedCollectionWithProxyMock() {
+    public void feedEntityWithUninitializedCollectionWithProxyMocks() {
 
         // Mock entity with proxy
         Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntity = buildMainEntityWithUninitializedThroughEntities();
@@ -202,13 +201,12 @@ public class HibernateToolsTest {
         try {
             mainEntityMocked.getThroughEntities().iterator();
             fail("A LazyInitializationException should be thrown");
-        }
-        catch (LazyInitializationException ignored) {
+        } catch (LazyInitializationException ignored) {
         }
     }
 
     @Test
-    public void feedEntityWithUninitializedSubEntityWithProxyMock() {
+    public void feedEntityWithUninitializedSubEntityWithProxyMocks() {
 
         // Mock entity with proxy
         Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntity = buildMainEntityWithUninitializedChildEntities();
@@ -221,14 +219,25 @@ public class HibernateToolsTest {
 
             assertThat(throughEntityMocked.getId(), is(notNullValue()));
             assertThat(throughEntityMocked.getLabel(), is(notNullValue()));
-        }
 
-        /*try {
-            mainEntityMocked.getThroughEntities().iterator();
-            fail("A LazyInitializationException should be thrown");
+            assertThat(throughEntityMocked.getChildEntity().getId(), is(notNullValue()));
+            try {
+                throughEntityMocked.getChildEntity().getLabel();
+                fail("A LazyInitializationException should be thrown");
+            } catch (LazyInitializationException ignored) {
+            }
         }
-        catch (LazyInitializationException ignored) {
-        }*/
+    }
+
+    @Test
+    public void feedFullyInitializedEntityWithProxyMocks() {
+
+        // Mock entity with proxy
+        Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntity = buildFullyInitializedMainEntity();
+
+        MainEntity mainEntityMocked = HibernateTools.feedWithMockProxy(unproxiedEntity);
+
+        assertThat(mainEntityMocked, is(unproxiedEntity.getLeft()));
     }
 
 

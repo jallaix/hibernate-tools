@@ -49,25 +49,44 @@ public class HibernateTools {
      * Feed an object graph with mock Hibernate proxies so as to get {@code LazyInitializationException} as expected in the original graph.
      *
      * @param entityWithUninitializedProxyPaths Entity graph composed of POJOs
-     * @param <T>                               Class type of the root entity
-     * @return An entity graph composed of POJOs and
+     * @param <T>                               Root entity type
+     * @param <P>                               Generated proxy type
+     * @return An entity graph with mock proxies
      */
-    @SuppressWarnings("unused")
+    @SuppressWarnings({"unused", "unchecked"})
     public static <T, P extends T> P feedWithMockProxy(Pair<T, Set<LinkedList<Field>>> entityWithUninitializedProxyPaths) {
 
+        // Get root entity and the set of uninitialized proxy paths
         T entity = entityWithUninitializedProxyPaths.getLeft();
         Set<LinkedList<Field>> uninitializedProxyPaths = entityWithUninitializedProxyPaths.getRight();
 
+        // Return the original entity if no mock proxy has to be instantiated
+        if (uninitializedProxyPaths.isEmpty())
+            return (P) entity;
+
         // Each field path is linked to an uninitialized proxy
-        Object currentItem = null;
+        P proxiedEntity = null;
         for (LinkedList<Field> fieldPath : uninitializedProxyPaths) {
 
-            entity = generateMockProxyForFieldPath(entity, fieldPath);
+            if (proxiedEntity == null)
+                proxiedEntity = generateMockProxyForFieldPath(entity, fieldPath);
+            else
+                proxiedEntity = generateMockProxyForFieldPath(proxiedEntity, fieldPath);
         }
 
-        return (P) entity;
+        return proxiedEntity;
     }
 
+    /**
+     * Generate a mock Hibernate proxy when the field path is reached
+     *
+     * @param entity    Entity for which a mock proxy could be
+     * @param fieldPath Remaining field path for the mock proxy
+     * @param <T>       Entity type
+     * @param <P>       Generated proxy type
+     * @return An entity graph with mock proxies
+     */
+    @SuppressWarnings("unchecked")
     private static <T, P extends T> P generateMockProxyForFieldPath(T entity, LinkedList<Field> fieldPath) {
 
         // Remove the first field from the list
@@ -75,15 +94,73 @@ public class HibernateTools {
 
         final Object fieldValue;
         final Class fieldClazz;
+
+        // A null field indicates the root entity
         if (firstField == null) {
             fieldValue = entity;
             fieldClazz = entity.getClass();
         }
+
+        // Set/List association : determine the proxy for each item
+        else if (Collection.class.isAssignableFrom(entity.getClass())) {
+
+            Collection entitySet = (Collection) entity;
+            Collection proxiedSet;
+            try {
+                proxiedSet = entitySet.getClass().newInstance();
+            } catch (InstantiationException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+            for (Object item : entitySet) {
+                fieldPath.addFirst(firstField);
+                proxiedSet.add(generateMockProxyForFieldPath(item, fieldPath));
+            }
+            return (P) proxiedSet;
+        }
+
+        // Map association : determine the proxy for each key and value
+        else if (Map.class.isAssignableFrom(entity.getClass())) {
+
+            Map entityMap = (Map) entity;
+            Map proxiedMap;
+            try {
+                proxiedMap = entityMap.getClass().newInstance();
+            } catch (InstantiationException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+            for (Object entryObject : entityMap.entrySet()) {
+                Map.Entry entry = (Map.Entry) entryObject;
+                fieldPath.addFirst(firstField);
+                Object proxiedKey = generateMockProxyForFieldPath(entry.getKey(), fieldPath);
+                fieldPath.addFirst(firstField);
+                Object proxiedValue = generateMockProxyForFieldPath(entry.getValue(), fieldPath);
+
+                proxiedMap.put(proxiedKey, proxiedValue);
+            }
+            return (P) proxiedMap;
+        }
+
+        // Array association : determine the proxy for each item
+        else if (Array.class.isAssignableFrom(entity.getClass())) {
+
+            Object[] entityArray = (Object[]) entity;
+            Object[] proxiedArray;
+            try {
+                proxiedArray = entityArray.getClass().newInstance();
+            } catch (InstantiationException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+            for (int i = 0; i < entityArray.length; i++) {
+                fieldPath.addFirst(firstField);
+                proxiedArray[i] = generateMockProxyForFieldPath(entityArray[i], fieldPath);
+            }
+            return (P) proxiedArray;
+        }
+
+        // Other cases : get the field value
         else {
             firstField.setAccessible(true);
             fieldClazz = firstField.getType();
-            if (Collection.class.isAssignableFrom(fieldClazz))
-                return null;//TODO
             try {
                 fieldValue = firstField.get(entity);
             } catch (IllegalAccessException e) {
@@ -102,10 +179,12 @@ public class HibernateTools {
             else if (List.class.isAssignableFrom(fieldClazz))
                 proxiedFieldValue = new PersistentList();
             else if (Array.class.isAssignableFrom(fieldClazz))
-                proxiedFieldValue = new PersistentArrayHolder(null, null);
+                proxiedFieldValue = new PersistentArrayHolder(null, new Object());
             else
                 proxiedFieldValue = createLazyProxy(fieldValue, fieldClazz);
         }
+
+        // The proxy will be found further in the object graph
         else
             proxiedFieldValue = generateMockProxyForFieldPath(fieldValue, fieldPath);
 
@@ -420,6 +499,7 @@ public class HibernateTools {
      * @param <P>    Proxy type
      * @return An newly instantiated proxy
      */
+    @SuppressWarnings("unchecked")
     public static <T, P extends T> P createLazyProxy(final T entity, Class clazz) {
 
         final P proxy;
