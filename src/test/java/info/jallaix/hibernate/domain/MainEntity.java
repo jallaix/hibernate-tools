@@ -5,6 +5,7 @@ import lombok.EqualsAndHashCode;
 import lombok.ToString;
 
 import javax.persistence.*;
+import java.io.Serializable;
 import java.util.Set;
 
 /**
@@ -14,7 +15,7 @@ import java.util.Set;
 @Data
 @EqualsAndHashCode(exclude="throughEntities")
 @ToString(exclude="throughEntities")
-public class MainEntity {
+public class MainEntity implements Serializable {
 
     @Id
     @Column

@@ -5,6 +5,7 @@ import lombok.EqualsAndHashCode;
 import lombok.ToString;
 
 import javax.persistence.*;
+import java.io.Serializable;
 
 /**
  * Created by Julien on 08/09/2016.
@@ -13,7 +14,7 @@ import javax.persistence.*;
 @Data
 @EqualsAndHashCode(exclude={"mainEntity", "childEntity"})
 @ToString(exclude={"mainEntity", "childEntity"})
-public class ThroughEntity {
+public class ThroughEntity implements Serializable {
 
     @Id
     @Column

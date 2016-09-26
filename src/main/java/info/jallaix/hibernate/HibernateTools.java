@@ -1,11 +1,12 @@
 package info.jallaix.hibernate;
 
-import javassist.util.proxy.MethodHandler;
+import info.jallaix.hibernate.proxy.MockMethodFilter;
+import info.jallaix.hibernate.proxy.MockMethodHandler;
 import javassist.util.proxy.ProxyFactory;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
+import org.dozer.DozerBeanMapper;
 import org.hibernate.Hibernate;
-import org.hibernate.LazyInitializationException;
 import org.hibernate.collection.internal.*;
 import org.hibernate.proxy.HibernateProxy;
 import org.hibernate.proxy.pojo.javassist.JavassistProxyFactory;
@@ -18,7 +19,7 @@ import java.util.*;
  * Utility class for Hibernate containing the method :
  * <ul>
  * <li>{@link #unproxyDetachedRecursively(Object)} : Remove all proxies from an object graph and keep uninitialized proxy paths.</li>
- * <li>{@link #feedWithMockProxy(Pair)} : Add mock proxies to an object graph based on uninitialized proxy paths.</li>
+ * <li>{@link #feedWithMockedProxies(Pair)} : Add mock proxies to an object graph based on uninitialized proxy paths.</li>
  * </ul>
  */
 public class HibernateTools {
@@ -44,7 +45,6 @@ public class HibernateTools {
         return unproxyDetachedRecursively(maybeProxy, new HashSet<>(), new HashSet<>(), fieldPath);
     }
 
-
     /**
      * Feed an object graph with mock Hibernate proxies so as to get {@code LazyInitializationException} as expected in the original graph.
      *
@@ -54,11 +54,14 @@ public class HibernateTools {
      * @return An entity graph with mock proxies
      */
     @SuppressWarnings({"unused", "unchecked"})
-    public static <T, P extends T> P feedWithMockProxy(Pair<T, Set<LinkedList<Field>>> entityWithUninitializedProxyPaths) {
+    public static <T, P extends T> P feedWithMockedProxies(final Pair<T, Set<LinkedList<Field>>> entityWithUninitializedProxyPaths) {
 
-        // Get root entity and the set of uninitialized proxy paths
-        T entity = entityWithUninitializedProxyPaths.getLeft();
-        Set<LinkedList<Field>> uninitializedProxyPaths = entityWithUninitializedProxyPaths.getRight();
+        // Get the root entity and the set of uninitialized proxy paths
+        T entity = new DozerBeanMapper().map(entityWithUninitializedProxyPaths.getLeft(), (Class<T>) entityWithUninitializedProxyPaths.getLeft().getClass());
+        Set<LinkedList<Field>> uninitializedProxyPaths = new HashSet<>();
+        for (LinkedList<Field> uninitializedProxyPath : entityWithUninitializedProxyPaths.getRight()) {
+            uninitializedProxyPaths.add(new LinkedList<>(uninitializedProxyPath));
+        }
 
         // Return the original entity if no mock proxy has to be instantiated
         if (uninitializedProxyPaths.isEmpty())
@@ -521,24 +524,19 @@ public class HibernateTools {
             }
         }
 
-        // The proxy method handler always throws a LazyInitializationException except when the identifier is accessed
-        final MethodHandler mi = new MethodHandler() {
-            public Object invoke(Object self, Method m, Method proceed,
-                                 Object[] args) throws Throwable {
-
-                if (identifierGetter == null || !m.getName().equals(identifierGetter.getName()))
-                    throw new LazyInitializationException("This object is not initialized.");
-                else
-                    return identifierGetter.invoke(entity);
-            }
-        };
-
         // Build proxy
-        ProxyFactory proxyFactory = JavassistProxyFactory.buildJavassistProxyFactory(clazz, new Class[0]);
+        ProxyFactory proxyFactory = JavassistProxyFactory.buildJavassistProxyFactory(clazz, new Class[]{HibernateProxy.class});
         proxyFactory.setSuperclass(clazz);
+        proxyFactory.setInterfaces(new Class[]{HibernateProxy.class});
+        proxyFactory.setFilter(new MockMethodFilter());
         try {
             //noinspection unchecked
-            proxy = (P) proxyFactory.create(new Class[0], new Object[0], mi);
+            proxy = (P) proxyFactory.create(
+                    new Class[0],
+                    new Object[0],
+                    new MockMethodHandler(
+                            entity,
+                            identifierGetter == null ? null : identifierGetter.getName()));
         } catch (Exception e) {
             throw new RuntimeException(e);
         }

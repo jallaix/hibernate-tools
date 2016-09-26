@@ -3,6 +3,7 @@ package info.jallaix.hibernate;
 import info.jallaix.hibernate.domain.ChildEntity;
 import info.jallaix.hibernate.domain.MainEntity;
 import info.jallaix.hibernate.domain.ThroughEntity;
+import lombok.SneakyThrows;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
 import org.dbunit.IDatabaseTester;
@@ -15,6 +16,8 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.ObjectOutputStream;
 import java.lang.reflect.Field;
 import java.util.*;
 
@@ -170,15 +173,15 @@ public class HibernateToolsTest {
     }
 
     /**
-     * Verify a previously un-proxied entity is properly feed with proxy mocks.
+     * Verify a previously uninitialized entity is properly feed with proxy mocks.
      */
     @Test
     public void feedUninitializedEntityWithProxyMocks() {
 
-        // Mock entity with proxy
+        // Entity with proxy paths
         Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntity = buildUninitializedMainEntity();
 
-        MainEntity entityMocked = HibernateTools.feedWithMockProxy(unproxiedEntity);
+        MainEntity entityMocked = HibernateTools.feedWithMockedProxies(unproxiedEntity);
         assertThat(entityMocked.getId(), is(unproxiedEntity.getLeft().getId()));
 
         try {
@@ -188,13 +191,16 @@ public class HibernateToolsTest {
         }
     }
 
+    /**
+     * Verify an entity with a previously uninitialized collection is properly feed with proxy mocks.
+     */
     @Test
     public void feedEntityWithUninitializedCollectionWithProxyMocks() {
 
         // Mock entity with proxy
         Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntity = buildMainEntityWithUninitializedThroughEntities();
 
-        MainEntity mainEntityMocked = HibernateTools.feedWithMockProxy(unproxiedEntity);
+        MainEntity mainEntityMocked = HibernateTools.feedWithMockedProxies(unproxiedEntity);
         assertThat(mainEntityMocked.getId(), is(unproxiedEntity.getLeft().getId()));
         assertThat(mainEntityMocked.getLabel(), is(unproxiedEntity.getLeft().getLabel()));
 
@@ -205,13 +211,16 @@ public class HibernateToolsTest {
         }
     }
 
+    /**
+     * Verify an entity with previously uninitialized sub-entities is properly feed with proxy mocks.
+     */
     @Test
     public void feedEntityWithUninitializedSubEntityWithProxyMocks() {
 
         // Mock entity with proxy
         Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntity = buildMainEntityWithUninitializedChildEntities();
 
-        MainEntity mainEntityMocked = HibernateTools.feedWithMockProxy(unproxiedEntity);
+        MainEntity mainEntityMocked = HibernateTools.feedWithMockedProxies(unproxiedEntity);
         assertThat(mainEntityMocked.getId(), is(unproxiedEntity.getLeft().getId()));
         assertThat(mainEntityMocked.getLabel(), is(unproxiedEntity.getLeft().getLabel()));
 
@@ -229,15 +238,48 @@ public class HibernateToolsTest {
         }
     }
 
+    /**
+     * Verify an entity with previously no uninitialized sub-entities is not fed with proxy mocks.
+     */
     @Test
     public void feedFullyInitializedEntityWithProxyMocks() {
 
         // Mock entity with proxy
         Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntity = buildFullyInitializedMainEntity();
 
-        MainEntity mainEntityMocked = HibernateTools.feedWithMockProxy(unproxiedEntity);
+        MainEntity mainEntityMocked = HibernateTools.feedWithMockedProxies(unproxiedEntity);
 
         assertThat(mainEntityMocked, is(unproxiedEntity.getLeft()));
+    }
+
+    /**
+     * Verify an entity with mocked proxies is serializable
+     */
+    @Test
+    @SneakyThrows
+    public void serializeProxyMocks() {
+
+        Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntity = buildMainEntityWithUninitializedChildEntities();
+
+        MainEntity mainEntityMocked = HibernateTools.feedWithMockedProxies(unproxiedEntity);
+
+        try (ObjectOutputStream out = new ObjectOutputStream(new ByteArrayOutputStream())) {
+            out.writeObject(mainEntityMocked);
+        }
+    }
+
+    /**
+     * Un-proxying an entity with mocked proxies acts the same as with Hibernate proxies
+     */
+    @Test
+    public void unproxyMockedProxies() {
+
+        Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntity = buildMainEntityWithUninitializedChildEntities();
+
+        MainEntity mainEntityMocked = HibernateTools.feedWithMockedProxies(unproxiedEntity);
+        Pair<MainEntity, Set<LinkedList<Field>>> unproxiedEntityUnmocked = HibernateTools.unproxyDetachedRecursively(mainEntityMocked);
+
+        assertThat(unproxiedEntityUnmocked, is(unproxiedEntity));
     }
 
 
