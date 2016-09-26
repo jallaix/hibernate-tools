@@ -8,6 +8,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import org.dozer.DozerBeanMapper;
 import org.hibernate.Hibernate;
 import org.hibernate.collection.internal.*;
+import org.hibernate.collection.spi.PersistentCollection;
 import org.hibernate.proxy.HibernateProxy;
 import org.hibernate.proxy.pojo.javassist.JavassistProxyFactory;
 
@@ -81,132 +82,6 @@ public class HibernateTools {
     }
 
     /**
-     * Generate a mock Hibernate proxy when the field path is reached
-     *
-     * @param entity    Entity for which a mock proxy could be
-     * @param fieldPath Remaining field path for the mock proxy
-     * @param <T>       Entity type
-     * @param <P>       Generated proxy type
-     * @return An entity graph with mock proxies
-     */
-    @SuppressWarnings("unchecked")
-    private static <T, P extends T> P generateMockProxyForFieldPath(T entity, LinkedList<Field> fieldPath) {
-
-        // Remove the first field from the list
-        final Field firstField = fieldPath.removeFirst();
-
-        final Object fieldValue;
-        final Class fieldClazz;
-
-        // A null field indicates the root entity
-        if (firstField == null) {
-            fieldValue = entity;
-            fieldClazz = entity.getClass();
-        }
-
-        // Set/List association : determine the proxy for each item
-        else if (Collection.class.isAssignableFrom(entity.getClass())) {
-
-            Collection entitySet = (Collection) entity;
-            Collection proxiedSet;
-            try {
-                proxiedSet = entitySet.getClass().newInstance();
-            } catch (InstantiationException | IllegalAccessException e) {
-                throw new RuntimeException(e);
-            }
-            for (Object item : entitySet) {
-                fieldPath.addFirst(firstField);
-                proxiedSet.add(generateMockProxyForFieldPath(item, fieldPath));
-            }
-            return (P) proxiedSet;
-        }
-
-        // Map association : determine the proxy for each key and value
-        else if (Map.class.isAssignableFrom(entity.getClass())) {
-
-            Map entityMap = (Map) entity;
-            Map proxiedMap;
-            try {
-                proxiedMap = entityMap.getClass().newInstance();
-            } catch (InstantiationException | IllegalAccessException e) {
-                throw new RuntimeException(e);
-            }
-            for (Object entryObject : entityMap.entrySet()) {
-                Map.Entry entry = (Map.Entry) entryObject;
-                fieldPath.addFirst(firstField);
-                Object proxiedKey = generateMockProxyForFieldPath(entry.getKey(), fieldPath);
-                fieldPath.addFirst(firstField);
-                Object proxiedValue = generateMockProxyForFieldPath(entry.getValue(), fieldPath);
-
-                proxiedMap.put(proxiedKey, proxiedValue);
-            }
-            return (P) proxiedMap;
-        }
-
-        // Array association : determine the proxy for each item
-        else if (Array.class.isAssignableFrom(entity.getClass())) {
-
-            Object[] entityArray = (Object[]) entity;
-            Object[] proxiedArray;
-            try {
-                proxiedArray = entityArray.getClass().newInstance();
-            } catch (InstantiationException | IllegalAccessException e) {
-                throw new RuntimeException(e);
-            }
-            for (int i = 0; i < entityArray.length; i++) {
-                fieldPath.addFirst(firstField);
-                proxiedArray[i] = generateMockProxyForFieldPath(entityArray[i], fieldPath);
-            }
-            return (P) proxiedArray;
-        }
-
-        // Other cases : get the field value
-        else {
-            firstField.setAccessible(true);
-            fieldClazz = firstField.getType();
-            try {
-                fieldValue = firstField.get(entity);
-            } catch (IllegalAccessException e) {
-                throw new RuntimeException(e);
-            }
-        }
-
-        // Generate a proxy for the field value
-        final Object proxiedFieldValue;
-        if (fieldPath.isEmpty()) {
-
-            if (Set.class.isAssignableFrom(fieldClazz))
-                proxiedFieldValue = new PersistentSet();
-            else if (Map.class.isAssignableFrom(fieldClazz))
-                proxiedFieldValue = new PersistentMap();
-            else if (List.class.isAssignableFrom(fieldClazz))
-                proxiedFieldValue = new PersistentList();
-            else if (Array.class.isAssignableFrom(fieldClazz))
-                proxiedFieldValue = new PersistentArrayHolder(null, new Object());
-            else
-                proxiedFieldValue = createLazyProxy(fieldValue, fieldClazz);
-        }
-
-        // The proxy will be found further in the object graph
-        else
-            proxiedFieldValue = generateMockProxyForFieldPath(fieldValue, fieldPath);
-
-        //
-        if (firstField == null)
-            return (P) proxiedFieldValue;
-
-        else {
-            try {
-                firstField.set(entity, proxiedFieldValue);
-            } catch (IllegalAccessException e) {
-                throw new RuntimeException(e);
-            }
-
-            return (P) entity;
-        }
-    }
-
-    /**
      * Recursively replace Hibernate proxies by POJOs.
      *
      * @param <T>                     Class type
@@ -219,7 +94,7 @@ public class HibernateTools {
     private static <T> Pair<T, Set<LinkedList<Field>>> unproxyDetachedRecursively(T maybeProxy, Set<LinkedList<Field>> uninitializedProxyPaths, HashSet<Object> visited, LinkedList<Field> fieldPath) {
 
         if (maybeProxy == null) {
-            return null;
+            return new ImmutablePair<>(null, uninitializedProxyPaths);
         }
 
         // Get the class to un-proxy
@@ -263,7 +138,7 @@ public class HibernateTools {
             }
 
             // Un-proxy an proxied collection field
-            if (fieldValue instanceof AbstractPersistentCollection && !((AbstractPersistentCollection) fieldValue).wasInitialized()) {
+            if (fieldValue instanceof PersistentCollection && !((PersistentCollection) fieldValue).wasInitialized()) {
                 fieldValue = null;
                 uninitializedProxyPaths.add(new LinkedList<>(fieldPath));
             }
@@ -494,6 +369,135 @@ public class HibernateTools {
     }
 
     /**
+     * Generate a mock Hibernate proxy when the field path is reached
+     *
+     * @param entity    Entity for which a mock proxy could be
+     * @param fieldPath Remaining field path for the mock proxy
+     * @param <T>       Entity type
+     * @param <P>       Generated proxy type
+     * @return An entity graph with mock proxies
+     */
+    @SuppressWarnings("unchecked")
+    private static <T, P extends T> P generateMockProxyForFieldPath(T entity, LinkedList<Field> fieldPath) {
+
+        // Remove the first field from the list
+        final Field firstField = fieldPath.removeFirst();
+
+        final Object fieldValue;
+        final Class fieldClazz;
+
+        // A null field indicates the root entity
+        if (firstField == null) {
+            fieldValue = entity;
+            fieldClazz = entity.getClass();
+        }
+
+        // Set/List association : determine the proxy for each item
+        else if (Collection.class.isAssignableFrom(entity.getClass())) {
+
+            Collection<Object> entityCollection = (Collection<Object>) entity;
+            Collection<Object> proxiedCollection;
+            try {
+                proxiedCollection = entityCollection.getClass().newInstance();
+            } catch (InstantiationException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+            for (Object item : entityCollection) {
+                fieldPath.addFirst(firstField);
+                proxiedCollection.add(generateMockProxyForFieldPath(item, fieldPath));
+            }
+            return (P) proxiedCollection;
+        }
+
+        // Map association : determine the proxy for each key and value
+        else if (Map.class.isAssignableFrom(entity.getClass())) {
+
+            Map<Object, Object> entityMap = (Map<Object, Object>) entity;
+            Map<Object, Object> proxiedMap;
+            try {
+                proxiedMap = entityMap.getClass().newInstance();
+            } catch (InstantiationException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+            for (Map.Entry<Object, Object> entry : entityMap.entrySet()) {
+                fieldPath.addFirst(firstField);
+                Object proxiedKey = generateMockProxyForFieldPath(entry.getKey(), fieldPath);
+                fieldPath.addFirst(firstField);
+                Object proxiedValue = generateMockProxyForFieldPath(entry.getValue(), fieldPath);
+
+                proxiedMap.put(proxiedKey, proxiedValue);
+            }
+            return (P) proxiedMap;
+        }
+
+        // Array association : determine the proxy for each item
+        else if (Array.class.isAssignableFrom(entity.getClass())) {
+
+            Object[] entityArray = (Object[]) entity;
+            Object[] proxiedArray;
+            try {
+                proxiedArray = entityArray.getClass().newInstance();
+            } catch (InstantiationException | IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+            for (int i = 0; i < entityArray.length; i++) {
+                fieldPath.addFirst(firstField);
+                proxiedArray[i] = generateMockProxyForFieldPath(entityArray[i], fieldPath);
+            }
+            return (P) proxiedArray;
+        }
+
+        // Other cases : get the field value
+        else {
+            firstField.setAccessible(true);
+            fieldClazz = firstField.getType();
+            try {
+                fieldValue = firstField.get(entity);
+            } catch (IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+        }
+
+        // Simply return the entity if the field value is a proxy collection previously set
+        if (fieldValue != null && PersistentCollection.class.isAssignableFrom(fieldValue.getClass()))
+            return (P) entity;
+
+        // Generate a proxy for the field value
+        final Object proxiedFieldValue;
+        if (fieldPath.isEmpty()) {
+
+            if (Set.class.isAssignableFrom(fieldClazz))
+                proxiedFieldValue = new PersistentSet();
+            else if (Map.class.isAssignableFrom(fieldClazz))
+                proxiedFieldValue = new PersistentMap();
+            else if (List.class.isAssignableFrom(fieldClazz))
+                proxiedFieldValue = new PersistentList();
+            else if (Array.class.isAssignableFrom(fieldClazz))
+                proxiedFieldValue = new PersistentArrayHolder(null, new Object());
+            else
+                proxiedFieldValue = createLazyProxy(fieldValue, fieldClazz);
+        }
+
+        // The proxy will be generated further in the object graph
+        else
+            proxiedFieldValue = generateMockProxyForFieldPath(fieldValue, fieldPath);
+
+        if (firstField == null)     // Return proxied root entity
+            return (P) proxiedFieldValue;
+
+
+        else {                      // Return entity with proxied field set
+            try {
+                firstField.set(entity, proxiedFieldValue);
+            } catch (IllegalAccessException e) {
+                throw new RuntimeException(e);
+            }
+
+            return (P) entity;
+        }
+    }
+
+    /**
      * Create a proxy that throws {@code LazyInitializationException} for every accessor method except the identifier one.
      *
      * @param entity Entity for which the proxy has to be instantiated (may be null)
@@ -503,7 +507,7 @@ public class HibernateTools {
      * @return An newly instantiated proxy
      */
     @SuppressWarnings("unchecked")
-    public static <T, P extends T> P createLazyProxy(final T entity, Class clazz) {
+    public static <T, P extends T> P createLazyProxy(final T entity, Class<?> clazz) {
 
         final P proxy;
 
