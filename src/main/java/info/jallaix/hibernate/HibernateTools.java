@@ -1,13 +1,16 @@
 package info.jallaix.hibernate;
 
+import com.rits.cloning.Cloner;
 import info.jallaix.hibernate.proxy.MockMethodFilter;
 import info.jallaix.hibernate.proxy.MockMethodHandler;
 import javassist.util.proxy.ProxyFactory;
 import org.apache.commons.lang3.tuple.ImmutablePair;
 import org.apache.commons.lang3.tuple.Pair;
-import org.dozer.DozerBeanMapper;
 import org.hibernate.Hibernate;
-import org.hibernate.collection.internal.*;
+import org.hibernate.collection.internal.PersistentArrayHolder;
+import org.hibernate.collection.internal.PersistentList;
+import org.hibernate.collection.internal.PersistentMap;
+import org.hibernate.collection.internal.PersistentSet;
 import org.hibernate.collection.spi.PersistentCollection;
 import org.hibernate.proxy.HibernateProxy;
 import org.hibernate.proxy.pojo.javassist.JavassistProxyFactory;
@@ -24,6 +27,12 @@ import java.util.*;
  * </ul>
  */
 public class HibernateTools {
+
+    /**
+     * Bean cloning
+     */
+    private static final Cloner cloner = new Cloner();
+
 
     /**
      * Replace Hibernate proxies by POJOs in an object graph.
@@ -57,12 +66,10 @@ public class HibernateTools {
     @SuppressWarnings({"unused", "unchecked"})
     public static <T, P extends T> P feedWithMockedProxies(final Pair<T, Set<LinkedList<Field>>> entityWithUninitializedProxyPaths) {
 
-        // Get the root entity and the set of uninitialized proxy paths
-        T entity = new DozerBeanMapper().map(entityWithUninitializedProxyPaths.getLeft(), (Class<T>) entityWithUninitializedProxyPaths.getLeft().getClass());
-        Set<LinkedList<Field>> uninitializedProxyPaths = new HashSet<>();
-        for (LinkedList<Field> uninitializedProxyPath : entityWithUninitializedProxyPaths.getRight()) {
-            uninitializedProxyPaths.add(new LinkedList<>(uninitializedProxyPath));
-        }
+        Pair<T, Set<LinkedList<Field>>> entityWithUninitializedProxyPathsCopy = cloner.deepClone(entityWithUninitializedProxyPaths);
+
+        T entity = entityWithUninitializedProxyPathsCopy.getLeft();
+        Set<LinkedList<Field>> uninitializedProxyPaths = entityWithUninitializedProxyPathsCopy.getRight();
 
         // Return the original entity if no mock proxy has to be instantiated
         if (uninitializedProxyPaths.isEmpty())
